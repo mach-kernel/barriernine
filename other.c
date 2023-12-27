@@ -1,0 +1,1 @@
+#include <Carbon.h>static void Initialize(void){	InitCursor();}
