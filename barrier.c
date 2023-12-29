@@ -11,14 +11,58 @@ static AppContext *appContext = NULL;
 void handleBFrame(BFrame *bFrame) {
 	if (!bFrame || !appContext) return;
 	
-	OTEnterNotifier(appContext->bEndpoint);
-	
 	// Server hello
 	if (!strcmp(bFrame->cmd, "Barrier")) {
 		bClientHelloBack(bFrame);
+	} else if (!strcmp(bFrame->cmd, "QINF")) {
+		bClientDINF();
 	}
 	
-	OTLeaveNotifier(appContext->bEndpoint);
+	// wtf
+	bClientCNOP();
+}
+
+void bClientCNOP() {
+	BFrame bFrameOut = { 0, "CNOP", {0} };
+	OTResult sent = noErr;
+	
+	loggerf(TRACE, "barrier: tx CNOP");
+	sent = sendBFrame(&bFrameOut);
+}
+
+void bClientDINF() {
+	BFrame bFrameOut = { 0, "DINF", {0} };
+	OTResult sent = noErr;
+
+	UInt16 xOrigin = 0;
+	UInt16 yOrigin = 0;
+	UInt16 mx = 0;
+	UInt16 my = 0;
+	
+	GDHandle mainDevice = GetMainDevice();
+	Rect screenRect;
+	Point mousePoint;
+	
+	UInt16 width;
+	UInt16 height;
+	
+	GetMouse(&mousePoint);
+	width = (*(*mainDevice)->gdPMap)->bounds.right;
+	height = (*(*mainDevice)->gdPMap)->bounds.bottom;
+	mx = mousePoint.h;
+	my = mousePoint.v;
+	
+	loggerf(TRACE, "barrier: tx DINF (o %d,%d %dx%d m %d,%d)", xOrigin, yOrigin, width, height, mx, my, mx, my);
+
+	bfWriteUInt16(&bFrameOut, xOrigin);
+	bfWriteUInt16(&bFrameOut, yOrigin);
+	bfWriteUInt16(&bFrameOut, width);
+	bfWriteUInt16(&bFrameOut, height);
+	bfWriteUInt16(&bFrameOut, 0);
+	bfWriteUInt16(&bFrameOut, mx);
+	bfWriteUInt16(&bFrameOut, my);
+
+	sent = sendBFrame(&bFrameOut);
 }
 
 void bClientHelloBack(BFrame *bFrameIn) {
@@ -26,8 +70,7 @@ void bClientHelloBack(BFrame *bFrameIn) {
 	Str255 pClientName;
 	char *clientName;
 	BFrame bFrameOut = { 0, "Barrier", {0} };
-	OTResult sent;
-	UInt32 slen = 0;
+	OTResult sent = noErr;
 	
 	if (bFrameIn->cmdlen < 4) return;
 	recv = (BCmdHello *) bFrameIn->buf;
@@ -41,7 +84,6 @@ void bClientHelloBack(BFrame *bFrameIn) {
 	bfWriteString(&bFrameOut, clientName);
 	
 	sent = sendBFrame(&bFrameOut);
-	loggerf(TRACE, "OT Sent: %d", sent);
 }
 
 static pascal void bNotifier(
@@ -66,9 +108,11 @@ static pascal void bNotifier(
 		case T_DATA:
 			do {
 				rcv = OTRcv(appContext->bEndpoint, appContext->otXferBuffer, OT_XFER_BUFSIZE, &junkFlags);
-				loggerf(TRACE, "T_DATA Recv %d (bytes/err)", rcv);
+				loggerf(TRACE, "T_DATA OTRcv %d", rcv);
 				bFrame = bRecv2Frame(rcv, (unsigned char *) appContext->otXferBuffer);
-				if (bFrame) handleBFrame(bFrame);
+				if (!bFrame) continue;
+				handleBFrame(bFrame);
+				free(bFrame);
 			} while (rcv > 0);
 			break;
 		case T_DISCONNECT:
@@ -93,6 +137,7 @@ OTResult sendBFrame(BFrame *bFrame) {
 	OTResult err;
 	UInt32 plen = 0;
 	unsigned char *buf, *bump;
+	size_t sent = 0;
 	
 	if (!bFrame) return kEINVALErr;
 	
@@ -104,17 +149,30 @@ OTResult sendBFrame(BFrame *bFrame) {
 	buf = calloc(plen, sizeof(char));
 	bump = buf;
 	
+	// payload length
 	memcpy(bump, &plen, sizeof(UInt32));
 	bump += sizeof(UInt32);
 	
+	// command
 	memcpy(bump, &bFrame->cmd[0], strlen(&bFrame->cmd[0]));
 	bump += strlen(&bFrame->cmd[0]);
 	
+	// payload
 	memcpy(bump, &bFrame->buf[0], bFrame->cmdlen);
 	
-	err = OTSnd(appContext->bEndpoint, buf, plen, 0);
+	bump = buf;
+	
+	do {
+		err = OTSnd(appContext->bEndpoint, bump, (size_t) plen-sent, 0);
+		loggerf(TRACE, "OT EP %p: sent %d", appContext->bEndpoint, err);
+		if (err > 0) {
+			sent += err;
+			bump += err;
+		}
+	} while ((err > 0) && ((plen-sent) > 0));
+
 	if (buf) free(buf);
-	return err;
+	return err < 0 ? err : sent;
 }
 
 BFrame *bRecv2Frame(unsigned int len, unsigned char *buf) {
@@ -126,9 +184,9 @@ BFrame *bRecv2Frame(unsigned int len, unsigned char *buf) {
 	// Must be able to read payload len
 	if (len < 4 || len > BFRAME_BUFSIZE) return NULL;
 	memcpy(&plen, buf, sizeof(UInt32));
-	cmdlen = plen;
-
 	buf += sizeof(UInt32);
+	
+	cmdlen = plen;
 	
 	commandName = calloc(1, sizeof("Barrier"));
 	
@@ -145,12 +203,13 @@ BFrame *bRecv2Frame(unsigned int len, unsigned char *buf) {
 	}
 	
 	if (strlen(commandName) > 7) return NULL;
-	loggerf(TRACE, "barrier: recv %d bytes; %s (%d bytes)", plen, commandName, cmdlen);
+	loggerf(TRACE, "barrier: recv %d bytes; %s (+%d bytes)", plen, commandName, cmdlen);
 	
 	bFrame = calloc(1, sizeof(BFrame));
 	bFrame->cmdlen = cmdlen;
 	memcpy(&bFrame->cmd[0], commandName, strlen(commandName));
 	memcpy(&bFrame->buf[0], buf, cmdlen);
+	free(commandName);
 	
 	return bFrame;
 }
@@ -163,14 +222,25 @@ void bfWriteUInt16(BFrame *bFrame, UInt16 val) {
 	bFrame->cmdlen += sizeof(UInt16);
 }
 
+void bfWriteSInt16(BFrame *bFrame, SInt16 val) {
+	if ((bFrame->cmdlen > BFRAME_BUFSIZE) || 
+	    (bFrame->cmdlen+4 > BFRAME_BUFSIZE)) return;
+	
+	memcpy(&bFrame->buf[bFrame->cmdlen], &val, sizeof(SInt16));
+	bFrame->cmdlen += sizeof(SInt16);
+}
+
+// uint32 strlen, ...str
 void bfWriteString(BFrame *bFrame, char *val) {
-	size_t vlen;
+	UInt32 vlen;
 	if (!val) return;
 	vlen = strlen(val);
 	
 	if ((bFrame->cmdlen > BFRAME_BUFSIZE) || 
 	    (bFrame->cmdlen+vlen > BFRAME_BUFSIZE)) return;
-	    
+	
+	memcpy(&bFrame->buf[bFrame->cmdlen], &vlen, sizeof(UInt32));
+	bFrame->cmdlen += sizeof(UInt32);
 	memcpy(&bFrame->buf[bFrame->cmdlen], val, vlen);
 	bFrame->cmdlen += vlen;
 }
@@ -260,7 +330,7 @@ OSStatus bConnect(AppContext *ctx, const char *host) {
 	loggerf(TRACE, "OT xfer buf %p: alloc %db", appContext->otXferBuffer, OT_XFER_BUFSIZE);
 
 	appContext->bEndpoint = OTOpenEndpointInContext(
-		OTCreateConfiguration(kTCPName),
+		OTCreateConfiguration("tcp(NoDelay=1)"),
 		0,
 		NULL, 
 		&err,
@@ -269,15 +339,19 @@ OSStatus bConnect(AppContext *ctx, const char *host) {
 	loggerf(TRACE, "OT EP %p: open %d", appContext->bEndpoint, err);
 	
 	// Do setup synchronously
-	OTSetSynchronous(appContext->bEndpoint);
-	OTSetBlocking(appContext->bEndpoint);
+	err = OTSetSynchronous(appContext->bEndpoint);
+	err = OTSetBlocking(appContext->bEndpoint);
+	if (err) return err;
 	
 	// Install notifier & bind endpoint
 	notifyPP = NewOTNotifyUPP(bNotifier);
-	OTInstallNotifier(appContext->bEndpoint, notifyPP, NULL);
-	loggerf(TRACE, "OT EP %p: notifier proc %p bound", appContext->bEndpoint, notifyPP);
-	OTBind(appContext->bEndpoint, NULL, NULL);
+	err = OTInstallNotifier(appContext->bEndpoint, notifyPP, NULL);
+	loggerf(TRACE, "OT EP %p: notify UPP %p bound", appContext->bEndpoint, notifyPP);
+	if (err) return err;
+	
+	err = OTBind(appContext->bEndpoint, NULL, &appContext->bEndpointBind);
 	loggerf(TRACE, "OT EP %p: bound", appContext->bEndpoint);
+	if (err) return err;
 	
 	// Resolve target host or IP
 	appContext->state = RESOLVING;
@@ -288,11 +362,12 @@ OSStatus bConnect(AppContext *ctx, const char *host) {
 	
 	// Use notifier events moving forward, including further
 	// connect handling
-	OTSetAsynchronous(appContext->bEndpoint);
+	err = OTSetAsynchronous(appContext->bEndpoint);
+	if (err) return err;
 	
 	// It's ok, it should give kOTNoDataErr
 	err = OTConnect(appContext->bEndpoint, &sndCall, NULL);
 	loggerf(INFO, "OT EP %p: connect %d", appContext->bEndpoint, err);
 	
-	return noErr;
+	return err == kOTNoDataErr ? noErr : err;
 }

@@ -20,6 +20,7 @@ typedef struct AppContext {
 	InetSvcRef inetSvc;
 	Ptr otXferBuffer;
 	EndpointRef bEndpoint;
+	TBind bEndpointBind;
 
 	// SIOUX.h window
 	WindowRef siouxWindow;
