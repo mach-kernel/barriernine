@@ -21,6 +21,9 @@ typedef struct AppContext {
 	Ptr otXferBuffer;
 	EndpointRef bEndpoint;
 	TBind bEndpointBind;
+	
+	// Barrier stuff
+	
 
 	// SIOUX.h window
 	WindowRef siouxWindow;

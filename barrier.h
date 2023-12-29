@@ -5,16 +5,19 @@
 #define OT_XFER_BUFSIZE 512
 #define BFRAME_BUFSIZE 255
 
+#define MACOS_CURSOR_X 0x0828
+#define MACOS_CURSOR_Y 0x082C
+#define MACOS_CURSOR_DRAW 0x08CE
+
 static const UInt16 bMajor = 1;
 static const UInt16 bMinor = 6;
-static const UInt16 bDefaultPort = 24800;
 
 #pragma pack(push, 1)
 
-typedef struct BCmdHello {
-	UInt16 major;
-	UInt16 minor;
-} BCmdHello;
+typedef struct UInt16Tuple {
+	UInt16 a;
+	UInt16 b;
+} UInt16Tuple;
 
 #pragma pack(pop)
 
@@ -35,9 +38,11 @@ static pascal void bNotifier(
 );
 
 // Client calls
-void bClientHelloBack(BFrame *bFrame);
-void bClientDINF();
+void bClientHelloBack(BFrame *bFrameIn);
+void bClientCALV();
 void bClientCNOP();
+void bClientDINF();
+void bClientDMMV(BFrame *bFrameIn);
 
 // Network setup
 OSStatus bOTInit(AppContext *ctx);

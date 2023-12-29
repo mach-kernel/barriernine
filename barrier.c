@@ -16,10 +16,32 @@ void handleBFrame(BFrame *bFrame) {
 		bClientHelloBack(bFrame);
 	} else if (!strcmp(bFrame->cmd, "QINF")) {
 		bClientDINF();
+	} else if (!strcmp(bFrame->cmd, "CIAK")) {
+		loggerf(TRACE, "barrier: rx CIAK");
+	} else if (!strcmp(bFrame->cmd, "CALV")) {
+		loggerf(TRACE, "barrier: rx CALV");
+		bClientCALV();
+	} else if (!strcmp(bFrame->cmd, "EUNK")) {
+		loggerf(TRACE, "barrier: rx EUNK");
+
+		StandardAlert(
+			kAlertStopAlert,
+			"\pUnknown client", 
+			"\pServer does not recognize this host, disconnecting. Did you add a screen for this machine?",
+			NULL,
+			NULL
+		);
+	} else if (!strcmp(bFrame->cmd, "DMMV")) {
+		bClientDMMV(bFrame);
 	}
+}
+
+void bClientCALV() {
+	BFrame bFrameOut = { 0, "CALV", {0} };
+	OTResult sent = noErr;
 	
-	// wtf
-	bClientCNOP();
+	loggerf(TRACE, "barrier: tx CALV");
+	sent = sendBFrame(&bFrameOut);
 }
 
 void bClientCNOP() {
@@ -28,6 +50,23 @@ void bClientCNOP() {
 	
 	loggerf(TRACE, "barrier: tx CNOP");
 	sent = sendBFrame(&bFrameOut);
+}
+
+void bClientDMMV(BFrame *bFrameIn) {
+	// { x, y }
+	UInt16Tuple *coords = (UInt16Tuple *) bFrameIn->buf;
+	unsigned int newMouse = (coords->b << 16) | coords->a;
+	
+	// credit: minivmac/MOUSEMDV.c
+	unsigned int *mx = (unsigned int *) MACOS_CURSOR_X;
+	unsigned int *my = (unsigned int *) MACOS_CURSOR_Y;
+	unsigned char *redraw = (unsigned char *) MACOS_CURSOR_DRAW;
+	
+	*mx = newMouse;
+	*my = newMouse;
+	*redraw = 0xFF;
+	
+	loggerf(TRACE, "barrier: rx DMMV (%d, %d)", coords->a, coords->b);
 }
 
 void bClientDINF() {
@@ -66,15 +105,16 @@ void bClientDINF() {
 }
 
 void bClientHelloBack(BFrame *bFrameIn) {
-	BCmdHello *recv;
+	// { major, minor }
+	UInt16Tuple *recv;
 	Str255 pClientName;
 	char *clientName;
 	BFrame bFrameOut = { 0, "Barrier", {0} };
 	OTResult sent = noErr;
 	
 	if (bFrameIn->cmdlen < 4) return;
-	recv = (BCmdHello *) bFrameIn->buf;
-	loggerf(TRACE, "barrier: hello from server (protocol v%d.%d)", recv->major, recv->minor);
+	recv = (UInt16Tuple *) bFrameIn->buf;
+	loggerf(TRACE, "barrier: hello from server (protocol v%d.%d)", recv->a, recv->b);
 	
 	GetDialogItemText(appContext->mdClientName, pClientName);
 	clientName = pstr2cstr(pClientName);
@@ -142,7 +182,6 @@ OTResult sendBFrame(BFrame *bFrame) {
 	if (!bFrame) return kEINVALErr;
 	
 	// int32 len, cmd, ...
-	plen += sizeof(UInt32);
 	plen += strlen(bFrame->cmd);
 	plen += bFrame->cmdlen;
 	
@@ -152,6 +191,9 @@ OTResult sendBFrame(BFrame *bFrame) {
 	// payload length
 	memcpy(bump, &plen, sizeof(UInt32));
 	bump += sizeof(UInt32);
+	// note: the payload length as sent does _not_ include the payload
+	// integer, but we need to know how much we're sending below!
+	plen += 4;
 	
 	// command
 	memcpy(bump, &bFrame->cmd[0], strlen(&bFrame->cmd[0]));
@@ -237,7 +279,7 @@ void bfWriteString(BFrame *bFrame, char *val) {
 	vlen = strlen(val);
 	
 	if ((bFrame->cmdlen > BFRAME_BUFSIZE) || 
-	    (bFrame->cmdlen+vlen > BFRAME_BUFSIZE)) return;
+	    (bFrame->cmdlen+vlen+sizeof(UInt32) > BFRAME_BUFSIZE)) return;
 	
 	memcpy(&bFrame->buf[bFrame->cmdlen], &vlen, sizeof(UInt32));
 	bFrame->cmdlen += sizeof(UInt32);
