@@ -4,22 +4,40 @@
 #include <stdlib.h>
 
 #include "context.h"
-#include "events.h"
+#include "bevents.h"
 #include "ui.h"
 #include "utils.h"
 #include "barrier.h"
 
 static AppContext *appContext = NULL;
 
-// MoreMasterPointers(64);
+// 
 
 void main(void)
 {
-	appContext = calloc(1, sizeof(AppContext));
-	// Some OpenTransport calls take a while
-	appContext->state = INITIALIZING;
+	OSStatus err = noErr;
+	AppContext appContext = {
+		INITIALIZING,
+		// OT
+		0,
+		0,
+		0,
+		0,
+		0,
+		// SIOUX
+		0,
+		// Controls
+		0,
+		0,
+		0,
+		0,
+		0,
+		0
+	};
 	
-	if (bOTInit(appContext) != noErr) {
+	err = bOTInit(&appContext);
+	
+	if (err != noErr) {
 		StandardAlert(
 			kAlertStopAlert,
 			"\pOpenTransport", 
@@ -27,20 +45,18 @@ void main(void)
 			NULL,
 			NULL
 		);
-		return;
 	}
 		
-	uiInit(appContext);
-	eventInit(appContext);
-
-	appContext->state = DISCONNECTED;
-	
-	RunApplicationEventLoop();
-	
-	if (appContext && appContext->bEndpoint) {
-		bTeardown(appContext);
+	if (err == noErr) {
+		uiInit(&appContext);
+		eventInit(&appContext);
+		appContext.state = DISCONNECTED;
+		RunApplicationEventLoop();
+		
+		if (appContext.bEndpoint) {
+			bTeardown(&appContext);
+		}
+		
+		CloseOpenTransportInContext(appContext.otClientContext);
 	}
-	
-	CloseOpenTransportInContext(appContext->otClientContext);
-	free(appContext);
 }

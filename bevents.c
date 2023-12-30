@@ -1,5 +1,5 @@
 #include "context.h"
-#include "events.h"
+#include "bevents.h"
 #include "ui.h"
 #include "utils.h"
 #include "barrier.h"
@@ -29,6 +29,7 @@ void eventInit(AppContext *ctx) {
 	bindSIOUXEvents(ctx->siouxWindow);
 	bindWindowEvents((WindowRef) ctx->mainDialog);
 	bindWindowEvents(ctx->siouxWindow);
+	bindMenuEvents(ctx->appleMenu);
 	bindIdleTimer();
 	appContext = ctx;
 }
@@ -70,13 +71,24 @@ static void handleIdleTick() {
 		case CONNECTED:
 			SetDialogItemText(appContext->mdStatusMsg, "\pConnected!");
 			HideControl(appContext->mdProgBar);
-			DeactivateControl(appContext->mdConnectBtn);
+			ActivateControl(appContext->mdConnectBtn);
 			break;
 		case RESOLVING:
 			SetDialogItemText(appContext->mdStatusMsg, "\pResolving host...");
 			break;
 	}
 
+}
+
+static void bindMenuEvents(MenuRef menu) {
+	InstallMenuEventHandler(
+		menu,
+		NewEventHandlerUPP((EventHandlerProcPtr) handleAppEvent), 
+		GetEventTypeCount(windowEvents),
+		windowEvents,
+		0,
+		NULL
+	);
 }
 
 static void bindWindowEvents(WindowRef window) {
@@ -128,6 +140,15 @@ static OSStatus handleAppEvent(EventHandlerCallRef ehcr, EventRef eventRef, void
 			if (hiCommand.commandID == kHICommandQuit) {
 				appContext->state = QUIT;
 				QuitApplicationEventLoop();
+			} else if (GetMenuID(hiCommand.menu.menuRef) == B9_APPLE_MENU &&
+				hiCommand.menu.menuItemIndex == 1) {
+					StandardAlert(
+						kAlertNoteAlert,
+						"\pbarriernine", 
+						"\pMade by David Stancu (https://dstancu.xyz)",
+						NULL,
+						NULL
+					);
 			}
 			break;
 		default:
@@ -140,6 +161,7 @@ static OSStatus handleAppEvent(EventHandlerCallRef ehcr, EventRef eventRef, void
 }
 
 static OSStatus handleControlEvent(EventHandlerCallRef ehcr, EventRef eventRef, void *userData) {
+	Boolean buttonDefault;
 	OSStatus status = noErr;
 	UInt32 eventKind = GetEventKind(eventRef);
 	ControlRef hit;
@@ -157,6 +179,7 @@ static OSStatus handleControlEvent(EventHandlerCallRef ehcr, EventRef eventRef, 
 				NULL,
 				&hit
 			);
+			
 			// Handle connect button
 			if (hit == appContext->mdConnectBtn) {
 				GetDialogItemText(appContext->mdServerUrl, stext);
@@ -172,7 +195,29 @@ static OSStatus handleControlEvent(EventHandlerCallRef ehcr, EventRef eventRef, 
 					break;
 				}
 				
-				bConnect(appContext, pstr2cstr(stext));
+				if (appContext->bEndpoint) {
+					bDisconnect(appContext);
+					buttonDefault = true;
+					SetControlData(
+						appContext->mdConnectBtn,
+						kControlEntireControl,
+						kControlPushButtonDefaultTag,
+						sizeof(buttonDefault),
+						&buttonDefault
+					);
+					SetControlTitle(appContext->mdConnectBtn, "\pConnect");
+				} else {
+					bConnect(appContext, pstr2cstr(stext));
+					SetControlTitle(appContext->mdConnectBtn, "\pDisconnect");
+					buttonDefault = false;
+					SetControlData(
+						appContext->mdConnectBtn,
+						kControlEntireControl,
+						kControlPushButtonDefaultTag,
+						sizeof(buttonDefault),
+						&buttonDefault
+					);
+				}
 			}
 			break;
 		default:
@@ -204,7 +249,7 @@ static OSStatus handleWindowEvent(EventHandlerCallRef ehcr, EventRef eventRef, v
 	eventDialog = GetDialogFromWindow(eventWindow);
 	GetWTitle(eventWindow, eventWindowTitle);
 
-	loggerf(TRACE, "kEventClassWindow (kind %i) - %#s", eventKind, eventWindowTitle);
+	// loggerf(TRACE, "kEventClassWindow (kind %i) - %#s", eventKind, eventWindowTitle);
 	
 	switch (eventKind) {
 		case kEventWindowActivated:

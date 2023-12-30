@@ -3,6 +3,7 @@
 void eventInit(AppContext *appContext);
 static void bindSIOUXEvents(WindowRef siouxWindow);
 static void bindWindowEvents(WindowRef window);
+static void bindMenuEvents(MenuRef menu);
 static void bindIdleTimer();
 
 static OSStatus handleControlEvent(EventHandlerCallRef ehcr, EventRef eventRef, void *userData);

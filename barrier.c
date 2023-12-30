@@ -8,21 +8,25 @@ static AppContext *appContext = NULL;
 // events
 //
 
-void handleBFrame(BFrame *bFrame) {
-	if (!bFrame || !appContext) return;
+OTResult handleBFrame(BFrame *bFrame) {
+	OTResult lookErr;
+	OTResult err = noErr;
+	if (!bFrame || !appContext) return err;
 	
 	// Server hello
 	if (!strcmp(bFrame->cmd, "Barrier")) {
-		bClientHelloBack(bFrame);
+		err = bClientHelloBack(bFrame);
 	} else if (!strcmp(bFrame->cmd, "QINF")) {
-		bClientDINF();
+		loggerf(INFO, "barrier: rx QINF");
+		err = bClientDINF();
 	} else if (!strcmp(bFrame->cmd, "CIAK")) {
-		loggerf(TRACE, "barrier: rx CIAK");
+		loggerf(INFO, "barrier: rx CIAK");
 	} else if (!strcmp(bFrame->cmd, "CALV")) {
 		loggerf(TRACE, "barrier: rx CALV");
-		bClientCALV();
+		err = bClientCALV();
+	// TODO
 	} else if (!strcmp(bFrame->cmd, "EUNK")) {
-		loggerf(TRACE, "barrier: rx EUNK");
+		loggerf(INFO, "barrier: rx EUNK");
 
 		StandardAlert(
 			kAlertStopAlert,
@@ -31,99 +35,30 @@ void handleBFrame(BFrame *bFrame) {
 			NULL,
 			NULL
 		);
+		bDisconnect(appContext);
+		err = kEPERMErr;
 	} else if (!strcmp(bFrame->cmd, "DMMV")) {
-		bClientDMMV(bFrame);
+		err = bClientDMMV(bFrame);
+	} else if (!strcmp(bFrame->cmd, "DMDN")) {
+		err = bClientDMDNUP(bFrame, true);
+	} else if (!strcmp(bFrame->cmd, "DMUP")) {
+		err = bClientDMDNUP(bFrame, false);
 	}
-}
-
-void bClientCALV() {
-	BFrame bFrameOut = { 0, "CALV", {0} };
-	OTResult sent = noErr;
+		
+	switch (err) {
+		// probably always bad, disconnect
+		case kOTLookErr:
+			OTLook(&lookErr);
+			loggerf(TRACE, "OT EP %p: OTLook err %d", lookErr);
+			bDisconnect(appContext);
+			break;
+		case kOTFlowErr:
+			loggerf(TRACE, "OT EP %p: flow control, BFrame %p dropped", bFrame);
+			break;
+	}
 	
-	loggerf(TRACE, "barrier: tx CALV");
-	sent = sendBFrame(&bFrameOut);
-}
-
-void bClientCNOP() {
-	BFrame bFrameOut = { 0, "CNOP", {0} };
-	OTResult sent = noErr;
-	
-	loggerf(TRACE, "barrier: tx CNOP");
-	sent = sendBFrame(&bFrameOut);
-}
-
-void bClientDMMV(BFrame *bFrameIn) {
-	// { x, y }
-	UInt16Tuple *coords = (UInt16Tuple *) bFrameIn->buf;
-	unsigned int newMouse = (coords->b << 16) | coords->a;
-	
-	// credit: minivmac/MOUSEMDV.c
-	unsigned int *mx = (unsigned int *) MACOS_CURSOR_X;
-	unsigned int *my = (unsigned int *) MACOS_CURSOR_Y;
-	unsigned char *redraw = (unsigned char *) MACOS_CURSOR_DRAW;
-	
-	*mx = newMouse;
-	*my = newMouse;
-	*redraw = 0xFF;
-	
-	loggerf(TRACE, "barrier: rx DMMV (%d, %d)", coords->a, coords->b);
-}
-
-void bClientDINF() {
-	BFrame bFrameOut = { 0, "DINF", {0} };
-	OTResult sent = noErr;
-
-	UInt16 xOrigin = 0;
-	UInt16 yOrigin = 0;
-	UInt16 mx = 0;
-	UInt16 my = 0;
-	
-	GDHandle mainDevice = GetMainDevice();
-	Rect screenRect;
-	Point mousePoint;
-	
-	UInt16 width;
-	UInt16 height;
-	
-	GetMouse(&mousePoint);
-	width = (*(*mainDevice)->gdPMap)->bounds.right;
-	height = (*(*mainDevice)->gdPMap)->bounds.bottom;
-	mx = mousePoint.h;
-	my = mousePoint.v;
-	
-	loggerf(TRACE, "barrier: tx DINF (o %d,%d %dx%d m %d,%d)", xOrigin, yOrigin, width, height, mx, my, mx, my);
-
-	bfWriteUInt16(&bFrameOut, xOrigin);
-	bfWriteUInt16(&bFrameOut, yOrigin);
-	bfWriteUInt16(&bFrameOut, width);
-	bfWriteUInt16(&bFrameOut, height);
-	bfWriteUInt16(&bFrameOut, 0);
-	bfWriteUInt16(&bFrameOut, mx);
-	bfWriteUInt16(&bFrameOut, my);
-
-	sent = sendBFrame(&bFrameOut);
-}
-
-void bClientHelloBack(BFrame *bFrameIn) {
-	// { major, minor }
-	UInt16Tuple *recv;
-	Str255 pClientName;
-	char *clientName;
-	BFrame bFrameOut = { 0, "Barrier", {0} };
-	OTResult sent = noErr;
-	
-	if (bFrameIn->cmdlen < 4) return;
-	recv = (UInt16Tuple *) bFrameIn->buf;
-	loggerf(TRACE, "barrier: hello from server (protocol v%d.%d)", recv->a, recv->b);
-	
-	GetDialogItemText(appContext->mdClientName, pClientName);
-	clientName = pstr2cstr(pClientName);
-	
-	bfWriteUInt16(&bFrameOut, bMajor);
-	bfWriteUInt16(&bFrameOut, bMinor);
-	bfWriteString(&bFrameOut, clientName);
-	
-	sent = sendBFrame(&bFrameOut);
+	free(bFrame);
+	return err;
 }
 
 static pascal void bNotifier(
@@ -134,7 +69,7 @@ static pascal void bNotifier(
 ) {
 	BFrame *bFrame;
 	OTFlags junkFlags;
-	OSStatus err;
+	OTResult err;
 	OTResult rcv;
 
 	loggerf(TRACE, "OT event 0x%08x", code);
@@ -149,11 +84,17 @@ static pascal void bNotifier(
 			do {
 				rcv = OTRcv(appContext->bEndpoint, appContext->otXferBuffer, OT_XFER_BUFSIZE, &junkFlags);
 				loggerf(TRACE, "T_DATA OTRcv %d", rcv);
+				
+				if (rcv == kOTLookErr) bDisconnect(appContext);
+				
 				bFrame = bRecv2Frame(rcv, (unsigned char *) appContext->otXferBuffer);
 				if (!bFrame) continue;
-				handleBFrame(bFrame);
-				free(bFrame);
+				err = handleBFrame(bFrame);
 			} while (rcv > 0);
+			break;
+		// flow control
+		case T_GODATA:
+			loggerf(TRACE, "T_GODATA");
 			break;
 		case T_DISCONNECT:
 			loggerf(INFO, "Disconnected (T_DISCONNECT)");
@@ -169,9 +110,123 @@ static pascal void bNotifier(
 	}
 }
 
+OTResult bClientHelloBack(BFrame *bFrameIn) {
+	// { major, minor }
+	UInt16Tuple *recv;
+	Str255 pClientName;
+	char *clientName;
+	BFrame bFrameOut = newBFrame("Barrier");
+	OTResult sent = noErr;
+	
+	if (bFrameIn->cmdlen < 4) return kOTBadDataErr;
+	recv = (UInt16Tuple *) bFrameIn->buf;
+	loggerf(INFO, "barrier: hello from server (protocol v%d.%d)", recv->a, recv->b);
+	
+	GetDialogItemText(appContext->mdClientName, pClientName);
+	clientName = pstr2cstr(pClientName);
+	
+	bfWriteUInt16(&bFrameOut, bMajor);
+	bfWriteUInt16(&bFrameOut, bMinor);
+	bfWriteString(&bFrameOut, clientName);
+	
+	return sendBFrame(&bFrameOut);
+}
+
+OTResult bClientCALV() {
+	BFrame bFrameOut = newBFrame("CALV");
+	loggerf(TRACE, "barrier: tx CALV");
+	return sendBFrame(&bFrameOut);
+}
+
+OTResult bClientCNOP() {
+	BFrame bFrameOut = newBFrame("CNOP");
+	loggerf(TRACE, "barrier: tx CNOP");
+	return sendBFrame(&bFrameOut);
+}
+
+OTResult bClientDINF() {
+	BFrame bFrameOut = newBFrame("DINF");
+
+	UInt16 xOrigin = 0;
+	UInt16 yOrigin = 0;
+	UInt16 mx = 0;
+	UInt16 my = 0;
+	
+	GDHandle mainDevice = GetMainDevice();
+	Point mousePoint;
+	
+	UInt16 width;
+	UInt16 height;
+	
+	GetMouse(&mousePoint);
+	width = (*(*mainDevice)->gdPMap)->bounds.right;
+	height = (*(*mainDevice)->gdPMap)->bounds.bottom;
+	mx = mousePoint.h;
+	my = mousePoint.v;
+	
+	loggerf(INFO, "barrier: tx DINF (o %d,%d %dx%d m %d,%d)", xOrigin, yOrigin, width, height, mx, my, mx, my);
+
+	bfWriteUInt16(&bFrameOut, xOrigin);
+	bfWriteUInt16(&bFrameOut, yOrigin);
+	bfWriteUInt16(&bFrameOut, width);
+	bfWriteUInt16(&bFrameOut, height);
+	// ?? reserved
+	bfWriteUInt16(&bFrameOut, 0);
+	bfWriteUInt16(&bFrameOut, mx);
+	bfWriteUInt16(&bFrameOut, my);
+
+	return sendBFrame(&bFrameOut);
+}
+
+OTResult bClientDMMV(BFrame *bFrameIn) {
+	// { x, y }
+	UInt16Tuple *coords = (UInt16Tuple *) bFrameIn->buf;
+	
+	// pack into int32 yyxx
+	unsigned int newMouse = (coords->b << 16) | coords->a;
+	
+	unsigned int *cInternal = (unsigned int *) MACOS_CURSOR_INT;
+	unsigned int *cRaw = (unsigned int *) MACOS_CURSOR_RAW;
+	unsigned char *chg = (unsigned char *) MACOS_CURSOR_CHG;
+	
+	if (coords->a < 0 || coords->b < 0) return;
+
+	if (*cInternal != newMouse) {
+		*cInternal = newMouse;
+		*cRaw = newMouse;
+		*chg = 0xFF;
+	}
+	
+	loggerf(TRACE, "barrier: rx DMMV (%d, %d)", coords->a, coords->b);
+
+	return noErr;
+}
+
+OTResult bClientDMDNUP(BFrame *bFrameIn, Boolean down) {
+	// TODO: ctrl click?
+	// char buttonId = *bFrameIn->buf;
+	loggerf(INFO, "barrier: rx DMDN/UP (down: %d)", down);
+	PostEvent(down ? mouseDown : mouseUp, 0);
+	return noErr;
+}
+
 //
 // serde
 //
+
+BFrame newBFrame(const char *cmd) {
+	BFrame newBFrame = {
+		// cmdlen
+		0,
+		// cmd
+		{0},
+		// buf
+		{0}
+	};
+	size_t cmdstrlen = strlen(cmd);
+	memcpy(&newBFrame.cmd, cmd, cmdstrlen > 7 ? 7 : cmdstrlen);
+	return newBFrame;
+}
 
 OTResult sendBFrame(BFrame *bFrame) {
 	OTResult err;
@@ -335,9 +390,12 @@ OSStatus bDisconnect(AppContext *ctx) {
 	if (!(ctx->state == CONNECTING || ctx->state == CONNECTED)) return result;
 	
 	if (ctx->bEndpoint && ctx->bEndpoint != kOTInvalidEndpointRef) {
+		result = OTSndDisconnect(appContext->bEndpoint, NULL);
+		loggerf(TRACE, "OT EP %p: sending d/c %d", ctx->bEndpoint, result);
+		OTCancelSynchronousCalls(ctx->bEndpoint, result);
+		loggerf(TRACE, "OT EP %p: cancel sync calls %d", ctx->bEndpoint, result);
 		result = OTUnbind(ctx->bEndpoint);
-		loggerf(TRACE, "OT EP %p: unbound %d", ctx->bEndpoint, result);
-		
+		loggerf(TRACE, "OT EP %p: unbind %d", ctx->bEndpoint, result);
 		result = OTCloseProvider(ctx->bEndpoint);
 		loggerf(TRACE, "OT EP %p: closing provider %d", ctx->bEndpoint, result);
 	}
@@ -372,7 +430,7 @@ OSStatus bConnect(AppContext *ctx, const char *host) {
 	loggerf(TRACE, "OT xfer buf %p: alloc %db", appContext->otXferBuffer, OT_XFER_BUFSIZE);
 
 	appContext->bEndpoint = OTOpenEndpointInContext(
-		OTCreateConfiguration("tcp(NoDelay=1)"),
+		OTCreateConfiguration("tcp(NoDelay=0)"),
 		0,
 		NULL, 
 		&err,

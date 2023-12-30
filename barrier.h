@@ -1,13 +1,19 @@
 #include <Carbon.h>
+#include <Events.h>
 #include <OpenTransport.h>
 #include <QuickDraw.h>
 
+#define OT_BFRAME_OVERFLOW_SIZE 8
 #define OT_XFER_BUFSIZE 512
 #define BFRAME_BUFSIZE 255
 
-#define MACOS_CURSOR_X 0x0828
-#define MACOS_CURSOR_Y 0x082C
-#define MACOS_CURSOR_DRAW 0x08CE
+// credit: minivmac/MOUSEMDV.c
+//         pce/src/arch/macplus/cmd_68k.c
+//         mpw/macos/sysequ.h
+#define MACOS_CURSOR_INT    0x0828
+#define MACOS_CURSOR_RAW    0x082C
+#define MACOS_CURSOR_CHG   0x08CE
+#define MACOS_CURSOR_BUTTON 0x0172
 
 static const UInt16 bMajor = 1;
 static const UInt16 bMinor = 6;
@@ -28,7 +34,7 @@ typedef struct BFrame {
 } BFrame;
 
 // Event handlers
-void handleBFrame(BFrame *bFrame);
+OTResult handleBFrame(BFrame *bFrame);
 
 static pascal void bNotifier(
 	void *contextPtr, 
@@ -38,11 +44,12 @@ static pascal void bNotifier(
 );
 
 // Client calls
-void bClientHelloBack(BFrame *bFrameIn);
-void bClientCALV();
-void bClientCNOP();
-void bClientDINF();
-void bClientDMMV(BFrame *bFrameIn);
+OTResult bClientHelloBack(BFrame *bFrameIn);
+OTResult bClientCALV();
+OTResult bClientCNOP();
+OTResult bClientDINF();
+OTResult bClientDMMV(BFrame *bFrameIn);
+OTResult bClientDMDNUP(BFrame *bFrameIn, Boolean down);
 
 // Network setup
 OSStatus bOTInit(AppContext *ctx);
@@ -51,6 +58,7 @@ OSStatus bDisconnect(AppContext *ctx);
 OSStatus bConnect(AppContext *appContext, const char *host);
 
 // serde
+BFrame newBFrame(const char *cmd);
 OTResult sendBFrame(BFrame *bFrame);
 BFrame *bRecv2Frame(unsigned int len, unsigned char *buf);
 void bfWriteUInt16(BFrame *bFrame, UInt16 val);

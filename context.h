@@ -21,9 +21,6 @@ typedef struct AppContext {
 	Ptr otXferBuffer;
 	EndpointRef bEndpoint;
 	TBind bEndpointBind;
-	
-	// Barrier stuff
-	
 
 	// SIOUX.h window
 	WindowRef siouxWindow;
@@ -35,4 +32,7 @@ typedef struct AppContext {
 	Handle mdClientName;
 	ControlRef mdProgBar;
 	Handle mdStatusMsg;
+	
+	// Menus
+	MenuRef appleMenu;
 } AppContext;
