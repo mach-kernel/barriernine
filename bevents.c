@@ -47,11 +47,11 @@ static void bindIdleTimer() {
 }
 
 static void handleIdleTick() {
+	if (!appContext) return;
+	
 	if (FrontWindow() == GetDialogWindow(appContext->mainDialog)) {
 		IdleControls(GetDialogWindow(appContext->mainDialog));
 	}
-	
-	if (!appContext) return;
 	
 	switch (appContext->state) {
 		case INITIALIZING:
@@ -59,6 +59,7 @@ static void handleIdleTick() {
 			ShowControl(appContext->mdProgBar);
 			break;
 		case DISCONNECTED:
+			SetControlTitle(appContext->mdConnectBtn, "\pConnect");
 			SetDialogItemText(appContext->mdStatusMsg, "\pDisconnected");
 			HideControl(appContext->mdProgBar);
 			ActivateControl(appContext->mdConnectBtn);
@@ -72,6 +73,7 @@ static void handleIdleTick() {
 			SetDialogItemText(appContext->mdStatusMsg, "\pConnected!");
 			HideControl(appContext->mdProgBar);
 			ActivateControl(appContext->mdConnectBtn);
+			SetControlTitle(appContext->mdConnectBtn, "\pDisconnect");
 			break;
 		case RESOLVING:
 			SetDialogItemText(appContext->mdStatusMsg, "\pResolving host...");
@@ -136,7 +138,7 @@ static OSStatus handleAppEvent(EventHandlerCallRef ehcr, EventRef eventRef, void
 			resultStatus = handleControlEvent(ehcr, eventRef, userData);
 			break;
 		case kEventClassCommand:
-			GetEventParameter(eventRef,kEventParamDirectObject,typeHICommand,NULL,sizeof(HICommand),NULL,&hiCommand);
+			GetEventParameter(eventRef, kEventParamDirectObject, typeHICommand, NULL, sizeof(HICommand), NULL, &hiCommand);
 			if (hiCommand.commandID == kHICommandQuit) {
 				appContext->state = QUIT;
 				QuitApplicationEventLoop();
@@ -149,6 +151,8 @@ static OSStatus handleAppEvent(EventHandlerCallRef ehcr, EventRef eventRef, void
 						NULL,
 						NULL
 					);
+			} else if (GetMenuID(hiCommand.menu.menuRef) == B9_WINDOW_MENU) {
+				windowMenuClick(hiCommand.menu.menuItemIndex);
 			}
 			break;
 		default:
@@ -184,7 +188,7 @@ static OSStatus handleControlEvent(EventHandlerCallRef ehcr, EventRef eventRef, 
 			if (hit == appContext->mdConnectBtn) {
 				GetDialogItemText(appContext->mdServerUrl, stext);
 				
-				if (!stext || stext[0] == 0) {
+				if (!stext || stext[0] == 0 || !pstrstr(stext, "\p:")) {
 					StandardAlert(
 						kAlertStopAlert,
 						"\pInvalid server", 
@@ -205,10 +209,9 @@ static OSStatus handleControlEvent(EventHandlerCallRef ehcr, EventRef eventRef, 
 						sizeof(buttonDefault),
 						&buttonDefault
 					);
-					SetControlTitle(appContext->mdConnectBtn, "\pConnect");
+
 				} else {
 					bConnect(appContext, pstr2cstr(stext));
-					SetControlTitle(appContext->mdConnectBtn, "\pDisconnect");
 					buttonDefault = false;
 					SetControlData(
 						appContext->mdConnectBtn,
@@ -253,10 +256,7 @@ static OSStatus handleWindowEvent(EventHandlerCallRef ehcr, EventRef eventRef, v
 	
 	switch (eventKind) {
 		case kEventWindowActivated:
-			updateWindowMenu(eventWindow, true);
-			break;
-		case kEventWindowDeactivated:
-			updateWindowMenu(eventWindow, false);
+			windowMenuCheck(eventWindow);
 			break;
 		default:
 			result = eventNotHandledErr;

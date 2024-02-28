@@ -11,31 +11,13 @@
 
 static AppContext *appContext = NULL;
 
-// 
-
 void main(void)
 {
 	OSStatus err = noErr;
-	AppContext appContext = {
-		INITIALIZING,
-		// OT
-		0,
-		0,
-		0,
-		0,
-		0,
-		// SIOUX
-		0,
-		// Controls
-		0,
-		0,
-		0,
-		0,
-		0,
-		0
-	};
+	appContext = calloc(1, sizeof(AppContext));
+	appContext->state = INITIALIZING;
 	
-	err = bOTInit(&appContext);
+	err = bOTInit(appContext);
 	
 	if (err != noErr) {
 		StandardAlert(
@@ -48,15 +30,15 @@ void main(void)
 	}
 		
 	if (err == noErr) {
-		uiInit(&appContext);
-		eventInit(&appContext);
-		appContext.state = DISCONNECTED;
+		uiInit(appContext);
+		eventInit(appContext);
+		appContext->state = DISCONNECTED;
 		RunApplicationEventLoop();
 		
-		if (appContext.bEndpoint) {
-			bTeardown(&appContext);
+		if (appContext->bEndpoint) {
+			bTeardown(appContext);
 		}
 		
-		CloseOpenTransportInContext(appContext.otClientContext);
+		CloseOpenTransportInContext(appContext->otClientContext);
 	}
 }

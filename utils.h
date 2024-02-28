@@ -19,5 +19,6 @@ typedef struct LogConf {
 int loggerf(LogLevel level, const char *fmt, ...);
 
 int pstrcmp(Str255 a, Str255 b);
+int pstrstr(Str255 a, Str255 b);
 char *pstr2cstr(Str255 in);
 char *cstr2pstr(char *cstr);

@@ -4,12 +4,13 @@
 
 static AppContext *appContext = NULL;
 
+static void _LMSetMouseButtonState(unsigned char val) { *(unsigned char *) 0x0172 = val; }
+
 //
 // events
 //
 
-OTResult handleBFrame(BFrame *bFrame) {
-	OTResult lookErr;
+static OTResult handleBFrame(BFrame *bFrame) {
 	OTResult err = noErr;
 	if (!bFrame || !appContext) return err;
 	
@@ -43,52 +44,73 @@ OTResult handleBFrame(BFrame *bFrame) {
 		err = bClientDMDNUP(bFrame, true);
 	} else if (!strcmp(bFrame->cmd, "DMUP")) {
 		err = bClientDMDNUP(bFrame, false);
+	} else if (!strcmp(bFrame->cmd, "DKDN")) {
+		err = bClientDKDNUP(bFrame, true);
+	} else if (!strcmp(bFrame->cmd, "DKUP")) {
+		err = bClientDKDNUP(bFrame, false);
+	} else if (!strcmp(bFrame->cmd, "DKRP")) {
+		err = bClientDKDNUP(bFrame, true);
 	}
 		
-	switch (err) {
-		// probably always bad, disconnect
-		case kOTLookErr:
-			OTLook(&lookErr);
-			loggerf(TRACE, "OT EP %p: OTLook err %d", lookErr);
-			bDisconnect(appContext);
-			break;
-		case kOTFlowErr:
-			loggerf(TRACE, "OT EP %p: flow control, BFrame %p dropped", bFrame);
-			break;
-	}
-	
+	handleOTResult(err);
 	free(bFrame);
 	return err;
 }
 
-static pascal void bNotifier(
-	void *contextPtr,
-	OTEventCode code,
-	OTResult result,
-	void *cookie
+static OTResult handleOTResult(OTResult err) {
+	OTResult lookErr;
+	OTResult handled = kOTNoError;
+
+	switch (err) {
+		case kOTLookErr:
+			lookErr = OTLook(appContext->bEndpoint);
+			loggerf(TRACE, "OT EP %p: OTLook err %d", appContext->bEndpoint, lookErr);
+			handled = handleOTEvent(lookErr);
+			break;
+		case kOTFlowErr:
+			loggerf(TRACE, "OT EP %p: flow control", appContext->bEndpoint);
+			break;
+		case kOTNoDataErr:
+		    loggerf(TRACE, "OT EP %p: no data", appContext->bEndpoint);
+			break;
+		default:
+			break;
+	}
+
+	return handled;
+}
+
+static OTResult handleOTEvent(
+	OTEventCode code
 ) {
-	BFrame *bFrame;
 	OTFlags junkFlags;
 	OTResult err;
 	OTResult rcv;
-
-	loggerf(TRACE, "OT event 0x%08x", code);
 	
+	BFrame *bFrame;
+
 	switch (code) {
 		case T_CONNECT:
 			loggerf(TRACE, "T_CONNECT");
-			OTRcvConnect(appContext->bEndpoint, NULL);
+			err = handleOTResult(OTRcvConnect(appContext->bEndpoint, NULL));
 			appContext->state = CONNECTED;
 			break;
 		case T_DATA:
 			do {
 				rcv = OTRcv(appContext->bEndpoint, appContext->otXferBuffer, OT_XFER_BUFSIZE, &junkFlags);
 				loggerf(TRACE, "T_DATA OTRcv %d", rcv);
+
+				err = handleOTResult(rcv);
+				if (err != kOTNoError) break;
 				
-				if (rcv == kOTLookErr) bDisconnect(appContext);
+				if (rcv < 4 || rcv > OT_XFER_BUFSIZE) {
+					loggerf(TRACE, "T_DATA invalid rcv, dropping");
+					err = kOTBadDataErr;
+					break;
+				}
 				
 				bFrame = bRecv2Frame(rcv, (unsigned char *) appContext->otXferBuffer);
-				if (!bFrame) continue;
+				if (!bFrame) break;
 				err = handleBFrame(bFrame);
 			} while (rcv > 0);
 			break;
@@ -98,19 +120,34 @@ static pascal void bNotifier(
 			break;
 		case T_DISCONNECT:
 			loggerf(INFO, "Disconnected (T_DISCONNECT)");
-			OTRcvDisconnect(appContext->bEndpoint, NULL);
+			err = handleOTResult(OTRcvDisconnect(appContext->bEndpoint, NULL));
 			bDisconnect(appContext);
 			break;
 		case T_ORDREL:
 			loggerf(INFO, "Disconnected (T_ORDREL)");
 			err = OTRcvOrderlyDisconnect(appContext->bEndpoint);
-			if (err == noErr) OTSndOrderlyDisconnect(appContext->bEndpoint);
+			if (err == noErr) err = OTSndOrderlyDisconnect(appContext->bEndpoint);
 			bDisconnect(appContext);
 			break;
 	}
+	
+	return err;
 }
 
-OTResult bClientHelloBack(BFrame *bFrameIn) {
+static pascal void bNotifier(
+	void *contextPtr,
+	OTEventCode code,
+	OTResult result,
+	void *cookie
+) {
+	OTResult err;
+
+	loggerf(TRACE, "OT event 0x%08x", code);
+	err = handleOTEvent(code);
+	loggerf(TRACE, "OT event handled: %d", err);
+}
+
+static OTResult bClientHelloBack(BFrame *bFrameIn) {
 	// { major, minor }
 	UInt16Tuple *recv;
 	Str255 pClientName;
@@ -132,21 +169,21 @@ OTResult bClientHelloBack(BFrame *bFrameIn) {
 	return sendBFrame(&bFrameOut);
 }
 
-OTResult bClientCALV() {
+static OTResult bClientCALV() {
 	BFrame bFrameOut = newBFrame("CALV");
 	loggerf(TRACE, "barrier: tx CALV");
 	return sendBFrame(&bFrameOut);
 }
 
-OTResult bClientCNOP() {
+static OTResult bClientCNOP() {
 	BFrame bFrameOut = newBFrame("CNOP");
 	loggerf(TRACE, "barrier: tx CNOP");
 	return sendBFrame(&bFrameOut);
 }
 
-OTResult bClientDINF() {
+static OTResult bClientDINF() {
 	BFrame bFrameOut = newBFrame("DINF");
-
+	
 	UInt16 xOrigin = 0;
 	UInt16 yOrigin = 0;
 	UInt16 mx = 0;
@@ -178,23 +215,25 @@ OTResult bClientDINF() {
 	return sendBFrame(&bFrameOut);
 }
 
-OTResult bClientDMMV(BFrame *bFrameIn) {
+static OTResult bClientDMMV(BFrame *bFrameIn) {
 	// { x, y }
-	UInt16Tuple *coords = (UInt16Tuple *) bFrameIn->buf;
-	
-	// pack into int32 yyxx
-	unsigned int newMouse = (coords->b << 16) | coords->a;
-	
+	SInt16Tuple *coords = (SInt16Tuple *) bFrameIn->buf;
 	unsigned int *cInternal = (unsigned int *) MACOS_CURSOR_INT;
 	unsigned int *cRaw = (unsigned int *) MACOS_CURSOR_RAW;
 	unsigned char *chg = (unsigned char *) MACOS_CURSOR_CHG;
+	
+	unsigned int newMouse;	
+	if (bFrameIn->cmdlen < 4) return kOTBadDataErr;
+	
+	// pack into int32 yyxx
+	newMouse = (coords->b << 16) | coords->a;
 	
 	if (coords->a < 0 || coords->b < 0) return;
 
 	if (*cInternal != newMouse) {
 		*cInternal = newMouse;
 		*cRaw = newMouse;
-		*chg = 0xFF;
+		*chg = * (unsigned char *) (0x08CF);
 	}
 	
 	loggerf(TRACE, "barrier: rx DMMV (%d, %d)", coords->a, coords->b);
@@ -202,11 +241,24 @@ OTResult bClientDMMV(BFrame *bFrameIn) {
 	return noErr;
 }
 
-OTResult bClientDMDNUP(BFrame *bFrameIn, Boolean down) {
+static OTResult bClientDMDNUP(BFrame *bFrameIn, Boolean down) {
 	// TODO: ctrl click?
 	// char buttonId = *bFrameIn->buf;
 	loggerf(INFO, "barrier: rx DMDN/UP (down: %d)", down);
+	_LMSetMouseButtonState(down ? 0x00 : 0x80);
 	PostEvent(down ? mouseDown : mouseUp, 0);
+	return noErr;
+}
+
+static OTResult bClientDKDNUP(BFrame *bFrameIn, Boolean down) {
+	UInt16Tuple *keyMeta = (UInt16Tuple *) bFrameIn->buf;
+	UInt32 msg;
+	unsigned char keyCode;
+	if (bFrameIn->cmdlen < 6) return kOTBadDataErr;
+	//keyCode = keyMeta->c;
+	//keyCode = (keyMeta->c << 8) & keyCodeMask;
+	PostEvent(down ? keyDown : keyUp, keyMeta->c + 96);
+	loggerf(INFO, "barrier: rx DKDN/UP (k: %04x, m: %d)", keyMeta->c, keyMeta->b);
 	return noErr;
 }
 
@@ -214,7 +266,7 @@ OTResult bClientDMDNUP(BFrame *bFrameIn, Boolean down) {
 // serde
 //
 
-BFrame newBFrame(const char *cmd) {
+static BFrame newBFrame(const char *cmd) {
 	BFrame newBFrame = {
 		// cmdlen
 		0,
@@ -228,7 +280,7 @@ BFrame newBFrame(const char *cmd) {
 	return newBFrame;
 }
 
-OTResult sendBFrame(BFrame *bFrame) {
+static OTResult sendBFrame(BFrame *bFrame) {
 	OTResult err;
 	UInt32 plen = 0;
 	unsigned char *buf, *bump;
@@ -268,11 +320,11 @@ OTResult sendBFrame(BFrame *bFrame) {
 		}
 	} while ((err > 0) && ((plen-sent) > 0));
 
-	if (buf) free(buf);
+	//?????????????//if (buf) free(buf);
 	return err < 0 ? err : sent;
 }
 
-BFrame *bRecv2Frame(unsigned int len, unsigned char *buf) {
+static BFrame *bRecv2Frame(unsigned int len, unsigned char *buf) {
 	BFrame *bFrame;
 	char *commandName;
 	UInt32 plen;
@@ -311,7 +363,7 @@ BFrame *bRecv2Frame(unsigned int len, unsigned char *buf) {
 	return bFrame;
 }
 
-void bfWriteUInt16(BFrame *bFrame, UInt16 val) {
+static void bfWriteUInt16(BFrame *bFrame, UInt16 val) {
 	if ((bFrame->cmdlen > BFRAME_BUFSIZE) || 
 	    (bFrame->cmdlen+4 > BFRAME_BUFSIZE)) return;
 	
@@ -319,7 +371,7 @@ void bfWriteUInt16(BFrame *bFrame, UInt16 val) {
 	bFrame->cmdlen += sizeof(UInt16);
 }
 
-void bfWriteSInt16(BFrame *bFrame, SInt16 val) {
+static void bfWriteSInt16(BFrame *bFrame, SInt16 val) {
 	if ((bFrame->cmdlen > BFRAME_BUFSIZE) || 
 	    (bFrame->cmdlen+4 > BFRAME_BUFSIZE)) return;
 	
@@ -328,7 +380,7 @@ void bfWriteSInt16(BFrame *bFrame, SInt16 val) {
 }
 
 // uint32 strlen, ...str
-void bfWriteString(BFrame *bFrame, char *val) {
+static void bfWriteString(BFrame *bFrame, char *val) {
 	UInt32 vlen;
 	if (!val) return;
 	vlen = strlen(val);
@@ -387,7 +439,7 @@ OSStatus bTeardown(AppContext *ctx) {
 OSStatus bDisconnect(AppContext *ctx) {
 	OSStatus result = noErr;
 	if (!ctx) return result;
-	if (!(ctx->state == CONNECTING || ctx->state == CONNECTED)) return result;
+	//if (!(ctx->state == CONNECTING || ctx->state == CONNECTED)) return result;
 	
 	if (ctx->bEndpoint && ctx->bEndpoint != kOTInvalidEndpointRef) {
 		result = OTSndDisconnect(appContext->bEndpoint, NULL);

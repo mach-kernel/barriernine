@@ -39,4 +39,5 @@ static DialogRef uiInitMainDialog();
 static void uiInitMenus();
 
 // Events
-void updateWindowMenu(WindowRef window, char activate);
+void windowMenuCheck(WindowRef window);
+void windowMenuClick(UInt16 menuItemIndex);

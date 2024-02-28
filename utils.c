@@ -53,11 +53,28 @@ int pstrcmp(Str255 a, Str255 b) {
 	return 0;
 }
 
+int pstrstr(Str255 a, Str255 b) {
+	char match;
+	int i, j = 0;
+	if (b[0] > a[0]) return 0;
+	
+	for (i=1; i<=a[0]; ++i) {
+		match = false;
+		for (j=1; j<=b[0]; ++j) {
+			match = a[i+j-1] == b[j];
+			if (!match) break;
+		}
+		if (match) return 1;
+	}
+	
+	return 0;
+}
+
 char *pstr2cstr(Str255 in) {
 	unsigned char len;
 	char *cstr;
 	len = *(in++);
-	if (len > 255) return NULL;
+	//if (len > 255) return NULL;
 	cstr = calloc(len + 1, sizeof(char));
 	memcpy(cstr, in, len);
 	return cstr;
